@@ -5,3 +5,6 @@ module Input where
 
     values :: [Int]
     values = (map read) . (splitOn ",") $ rawInput
+
+    values2 :: Int
+    values2 = 19690720
