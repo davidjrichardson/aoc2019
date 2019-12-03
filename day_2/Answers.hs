@@ -6,7 +6,7 @@ import qualified Data.Maybe as Maybe
 
 -- Functions for processing Intcode
 opcode :: Int -> Int -> Int -> (Map.Map Int Int) -> (Int -> Int -> Int) -> (Map.Map Int Int)
-opcode verb noun place map f = Map.insert place (f (map Map.! noun) (map Map.! verb)) map
+opcode verb noun place map f = Map.insert place ((map Map.! noun) `f` (map Map.! verb)) map
 
 intcode :: [Int] -> (Map.Map Int Int) -> (Map.Map Int Int)
 intcode (1  : verb : noun : place : rest) state = intcode rest (opcode verb noun place state (+))
