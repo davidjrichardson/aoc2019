@@ -1,6 +1,13 @@
 from itertools import product
 from typing import List, Dict, Tuple, Callable
 
+# Parameter pair of value, indexing mode
+ParamPair = Tuple[int, int]
+
+
+# TODO: Create namedtuple for parameter pairs
+# TODO: Create program class to encapsulate instructions etc
+
 
 class Instruction:
     """
@@ -8,13 +15,27 @@ class Instruction:
     """
 
     def __init__(self, args: Tuple[int, ...]):
-        self.opcode, self.verb, self.noun, self.place = args
+        # TODO: Deconstruct the opcode into addressing modes
+        opcode, verb, noun, place = args
+        opstr = str(opcode).zfill(5)
+
+        self.opcode = int(opstr[-2:])
+        self.verb = (verb, int(opstr[2]))
+        self.noun = (noun, int(opstr[1]))
+        self.place = (place, int(opstr[0]))
 
     def get_op(self) -> Callable[[int, int], int]:
         return {
             1: lambda x, y: x + y,
             2: lambda x, y: x * y,
         }[self.opcode]
+
+    @staticmethod
+    def get_value(param, memory):
+        return {
+            0: memory[param[0]],
+            1: param[param[1]],
+        }[param[1]]
 
 
 # Open the file and turn it into a list of ints
@@ -38,7 +59,8 @@ def intcode(program: List[int], memory: Dict[int, int]):
 
     # Pattern match over the input
     ins, rest = glob_program(program)
-    memory[ins.place] = ins.get_op()(memory[ins.verb], memory[ins.noun])
+    memory[ins.place[0]] = ins.get_op()(Instruction.get_value(ins.verb, memory),
+                                        Instruction.get_value(ins.noun, memory))
 
     # Perform the operation
     return intcode(rest, memory)
