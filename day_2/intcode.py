@@ -58,8 +58,8 @@ class Instruction(ABC):
                 return BinaryOpInstruction(opcode, params)
             elif 2 < opcode <= 4 or opcode == 9:
                 place, rest = args[0], args[1:]
-                params = [Parameter(value=place, addr_mode=opcode_full[0])]
-                return UnaryOpInstruction(opcode, params)
+                params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
+                return IOOpInstruction(opcode, params)
             else:
                 raise NotImplementedError(f'Opcode: {opcode}')
 
@@ -74,35 +74,44 @@ class HaltInstruction(Instruction):
         return memory, inputs, outputs
 
 
-class UnaryOpInstruction(Instruction):
+class IOOpInstruction(Instruction):
     """
     Unary operation for the interpreter - may consume an input token
     """
 
-    def place(self, memory: Dict[int, int]) -> int:
-        if self.params[0].addr_mode == 2:
-            # memory[-1] is the relative base for execution
-            return memory[-1] + self.params[0].value
-        elif self.params[0].addr_mode == 1:
-            return self.params[0].value
-        elif self.params[0].value == 0:
-            return self.params[0].value
+    @property
+    def place(self) -> Parameter:
+        return self.params[0]
+
+    def memory_index(self, memory: Dict[int, int]) -> int:
+        if self.place.addr_mode == 2:
+            return memory[-1] + self.place.value
+        else:
+            return self.place.value
+
+    def take_input(self, memory: Dict[int, int], inputs: List[int]) -> List[int]:
+        if self.place.addr_mode == 1:
+            raise NotImplementedError(f'Addressing mode {self.place.addr_mode} unsupported for opcode {self.opcode}')
+
+        memory[self.memory_index(memory)] = inputs[0]
+        return inputs[1:]
 
     def execute(self, memory: Dict[int, int], inputs: List[int], outputs: List[int]) -> OutState:
         if self.opcode == 3:
             if inputs:
                 # Save the first item of the inputs list to memory and cosnume it from the input list
-                memory[self.place(memory)] = inputs[0]
-
-                return memory, inputs[1:], outputs
+                return memory, self.take_input(memory, inputs), outputs
             else:
-                raise IndexError(f'Out of inputs to consume for instruction: {self.__repr__()}')
+                raise IndexError(f'Out of inputs to consume for instruction: {self}')
         elif self.opcode == 4:
-            # TODO: Think about how to implement immediate addressing
-            pass
-            # outputs.append()
+            if self.place.addr_mode == 1:
+                outputs.append(self.place.value)
+            else:
+                outputs.append(memory[self.memory_index(memory)])
+
+            return memory, inputs, outputs
         else:
-            raise NotImplementedError(f'Opcode not implemented: {self.opcode}')
+            raise NotImplementedError(f'Instruction not implemented: {self}')
 
 
 class BinaryOpInstruction(Instruction):
@@ -143,6 +152,7 @@ class BinaryOpInstruction(Instruction):
 
             return memory, inputs, outputs
         else:
+            # TODO: Deal with relative offset
             raise NotImplementedError(f'Addressing mode for place={self.place.addr_mode} is unsupported')
 
 
@@ -156,7 +166,7 @@ def run_instruction(ins_ptr: int, memory: Dict[int, int], inputs: List[int], out
 
     if isinstance(instruction, BinaryOpInstruction):
         new_ptr = ins_ptr + 4
-    elif isinstance(instruction, UnaryOpInstruction):
+    elif isinstance(instruction, IOOpInstruction):
         new_ptr = ins_ptr + 2
     else:
         new_ptr = ins_ptr

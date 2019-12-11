@@ -1,6 +1,6 @@
-# Open the file and turn it into a list of ints
 from intcode import Machine
 
+# Open the file and turn it into a list of ints
 with open('input.txt', 'r') as input_file:
     input_program = input_file.readline()
 
