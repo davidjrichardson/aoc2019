@@ -5,7 +5,8 @@ from typing import List, Dict, Tuple, TypeVar, Callable, Iterable
 
 # TypeVar to get around Python's type hinting shenanigans
 Ins = TypeVar('Ins', bound='Instruction')
-OutState = Tuple[Dict[int, int], List[int], List[int]]
+ProgramState = Tuple[int, Dict[int, int], List[int], List[int]]
+ProgramOutput = Tuple[Dict[int, int], List[int], List[int]]
 SubList = List[Tuple[int, int]]
 
 
@@ -35,7 +36,7 @@ class Instruction(ABC):
         return f'Instruction(opcode={self.opcode}, parameters={self.params})'
 
     @abstractmethod
-    def execute(self, memory: Dict[int, int], inputs: List[int], outputs: List[int]) -> OutState:
+    def execute(self, in_state: ProgramState) -> ProgramState:
         pass
 
     @staticmethod
@@ -49,17 +50,17 @@ class Instruction(ABC):
         if opcode == 99:
             return HaltInstruction(opcode)
         else:
-            if opcode <= 2:
+            if opcode == 1 or opcode == 2 or opcode == 7 or opcode == 8:
                 verb, noun, place, rest = args[0], args[1], args[2], args[3:]
                 params = [Parameter(value=verb, addr_mode=int(opcode_full[2])),
                           Parameter(value=noun, addr_mode=int(opcode_full[1])),
                           Parameter(value=place, addr_mode=int(opcode_full[0]))]
 
                 return BinaryOpInstruction(opcode, params)
-            elif 2 < opcode <= 4 or opcode == 9:
+            elif opcode == 3 or opcode == 4:
                 place, rest = args[0], args[1:]
                 params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
-                return IOOpInstruction(opcode, params)
+                return IoInstruction(opcode, params)
             else:
                 raise NotImplementedError(f'Opcode: {opcode}')
 
@@ -69,14 +70,14 @@ class HaltInstruction(Instruction):
     Halt instruction to indicate to the interpreter that the program has finished
     """
 
-    def execute(self, memory: Dict[int, int], inputs: List[int], outputs: List[int]) -> OutState:
+    def execute(self, in_state: ProgramState) -> ProgramState:
         # Halt producs a no-op
-        return memory, inputs, outputs
+        return in_state
 
 
-class IOOpInstruction(Instruction):
+class IoInstruction(Instruction):
     """
-    Unary operation for the interpreter - may consume an input token
+    I/O operation for the interpreter - may consume an input token or output to the output buffer
     """
 
     @property
@@ -96,11 +97,12 @@ class IOOpInstruction(Instruction):
         memory[self.memory_index(memory)] = inputs[0]
         return inputs[1:]
 
-    def execute(self, memory: Dict[int, int], inputs: List[int], outputs: List[int]) -> OutState:
+    def execute(self, in_state: ProgramState) -> ProgramState:
+        ins_ptr, memory, inputs, outputs = in_state
         if self.opcode == 3:
             if inputs:
                 # Save the first item of the inputs list to memory and cosnume it from the input list
-                return memory, self.take_input(memory, inputs), outputs
+                return ins_ptr, memory, self.take_input(memory, inputs), outputs
             else:
                 raise IndexError(f'Out of inputs to consume for instruction: {self}')
         elif self.opcode == 4:
@@ -109,9 +111,21 @@ class IOOpInstruction(Instruction):
             else:
                 outputs.append(memory[self.memory_index(memory)])
 
-            return memory, inputs, outputs
+            return ins_ptr, memory, inputs, outputs
         else:
             raise NotImplementedError(f'Instruction not implemented: {self}')
+
+
+class JumpInstruction(Instruction):
+    """
+    Jump the instruction pointer based for execution based on current state
+    """
+
+    def execute(self, in_state: ProgramState) -> ProgramState:
+        ins_ptr, memory, inputs, outputs = in_state
+        # TODO: Change the value of ins_ptr
+
+        return in_state
 
 
 class BinaryOpInstruction(Instruction):
@@ -144,21 +158,26 @@ class BinaryOpInstruction(Instruction):
         return {
             1: lambda x, y: x + y,
             2: lambda x, y: x * y,
+            7: lambda x, y: 1 if x < y else 0,
+            8: lambda x, y: 1 if x == y else 0,
         }[self.opcode]
 
-    def execute(self, memory: Dict[int, int], inputs: List[int], outputs: List[int]) -> OutState:
+    def execute(self, in_state: ProgramState) -> ProgramState:
+        ins_ptr, memory, inputs, outputs = in_state
         if self.place.addr_mode == 0:
             memory[self.place.value] = self.operation(self.verb(memory), self.noun(memory))
 
-            return memory, inputs, outputs
+            return ins_ptr, memory, inputs, outputs
         else:
             # TODO: Deal with relative offset
             raise NotImplementedError(f'Addressing mode for place={self.place.addr_mode} is unsupported')
 
 
-def run_instruction(ins_ptr: int, memory: Dict[int, int], inputs: List[int], outputs: List[int]) -> OutState:
+def run_instruction(in_state: ProgramState) -> ProgramState:
+    ins_ptr, memory, inputs, outputs = in_state
+
     if not memory:
-        return memory, inputs, outputs
+        return ins_ptr, memory, inputs, outputs
 
     # Decode the memory into an instruction
     ints = list(map(lambda x: x[1], sorted(memory.items(), key=lambda x: x[0])))
@@ -166,16 +185,16 @@ def run_instruction(ins_ptr: int, memory: Dict[int, int], inputs: List[int], out
 
     if isinstance(instruction, BinaryOpInstruction):
         new_ptr = ins_ptr + 4
-    elif isinstance(instruction, IOOpInstruction):
+    elif isinstance(instruction, IoInstruction):
         new_ptr = ins_ptr + 2
     else:
         new_ptr = ins_ptr
 
     # Update the program and run the next instruction or stop the program if we hit a halt
     if isinstance(instruction, HaltInstruction):
-        return memory, inputs, outputs
+        return ins_ptr, memory, inputs, outputs
     else:
-        return run_instruction(new_ptr, *(instruction.execute(memory, inputs, outputs)))
+        return run_instruction(instruction.execute((new_ptr, memory, inputs, outputs)))
 
 
 class Program:
@@ -189,7 +208,8 @@ class Program:
 
     def execute(self, inputs: List[int], outputs: List[int]) -> Tuple[Dict[int, int], List[int], List[int]]:
         #  Start with an offset of 1 since index -1 stores the relative base
-        return run_instruction(1, self.memory, inputs, outputs)
+        _, memory, inputs, outputs = run_instruction((1, self.memory, inputs, outputs))
+        return memory, inputs, outputs
 
 
 class Machine:
@@ -205,7 +225,7 @@ class Machine:
 
         self.param_space = list(map(lambda x: list(x), product(*params)))
 
-    def run_one(self, inputs: List[int] = [], outputs: List[int] = []) -> Tuple[OutState, SubList]:
+    def run_one(self, inputs: List[int] = [], outputs: List[int] = []) -> Tuple[ProgramOutput, SubList]:
         parameters = self.param_space[0]
         if len(self.param_space) > 1:
             self.param_space = self.param_space[1:]
@@ -215,7 +235,7 @@ class Machine:
         program = Program(dict(self.base_program), parameters)
         return program.execute(inputs, outputs), parameters
 
-    def run_all(self, inputs: List[int] = [], outputs: List[int] = []) -> List[Tuple[OutState, SubList]]:
+    def run_all(self, inputs: List[int] = [], outputs: List[int] = []) -> List[Tuple[ProgramOutput, SubList]]:
         runs = []
         for parameters in self.param_space:
             try:
@@ -227,7 +247,7 @@ class Machine:
         return runs
 
     def run_till_predicate(self, predicate: Callable[[int], bool], inputs: List[int] = [],
-                           outputs: List[int] = []) -> Tuple[OutState, SubList]:
+                           outputs: List[int] = []) -> Tuple[ProgramOutput, SubList]:
         for parameters in self.param_space:
             program = Program(dict(self.base_program), parameters)
 
