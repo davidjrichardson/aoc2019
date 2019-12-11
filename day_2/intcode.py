@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple, TypeVar, Callable, Iterable
 
 # TypeVar to get around Python's type hinting shenanigans
 Ins = TypeVar('Ins', bound='Instruction')
+Computer = TypeVar('Computer', bound='Machine')
 ProgramState = Tuple[int, Dict[int, int], List[int], List[int]]
 ProgramOutput = Tuple[Dict[int, int], List[int], List[int]]
 SubList = List[Tuple[int, int]]
@@ -237,7 +238,7 @@ class Program:
 
 
 class Machine:
-    def __init__(self, input_str: str, param_ranges: List[Tuple[int, Iterable[int]]] = []):
+    def __init__(self, input_str: str, param_ranges: List[Tuple[int, Iterable[int]]] = [], chained_pc: Computer = None):
         # param_range is tuple of (instruction index, range of values)
         self.base_program = defaultdict(int)
         self.base_program.update(enumerate(map(lambda x: int(x), input_str.split(","))))
@@ -249,6 +250,20 @@ class Machine:
             params.append(list(zip([index for i in range(len(param_range))], param_range)))
 
         self.param_space = list(map(lambda x: list(x), product(*params)))
+        self.chained_machine = chained_pc
+
+    def run_chain(self, inputs: List[List[int]] = []) -> Tuple[ProgramOutput, SubList]:
+        """
+        inputs is in reverse execution order; the last item in the list is the first to be used
+        """
+        if self.chained_machine:
+            chain_out, _ = self.chained_machine.run_chain(inputs[1:])
+            _, chain_inputs, chain_outputs = chain_out
+            our_input = inputs[0] + chain_outputs
+            return self.run_one(our_input, outputs=[])
+            # Input: [signal phase, output from previous machine]
+        else:
+            return self.run_one(inputs[0], [])
 
     def run_one(self, inputs: List[int] = [], outputs: List[int] = []) -> Tuple[ProgramOutput, SubList]:
         parameters = self.param_space[0]
