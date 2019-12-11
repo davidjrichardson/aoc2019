@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from itertools import product
 from typing import List, Dict, Tuple, TypeVar, Callable, Iterable
 
@@ -35,6 +35,16 @@ class Instruction(ABC):
     def __repr__(self) -> str:
         return f'Instruction(opcode={self.opcode}, parameters={self.params})'
 
+    @property
+    def place(self) -> Parameter:
+        return self.params[-1]
+
+    def memory_index(self, memory: Dict[int, int]) -> int:
+        if self.place.addr_mode == 2:
+            return memory[-1] + self.place.value
+        else:
+            return self.place.value
+
     @abstractmethod
     def execute(self, in_state: ProgramState) -> ProgramState:
         pass
@@ -61,6 +71,11 @@ class Instruction(ABC):
                 place, rest = args[0], args[1:]
                 params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
                 return IoInstruction(opcode, params)
+            elif opcode == 5 or opcode == 6:
+                verb, noun, rest = args[0], args[1], args[2:]
+                params = [Parameter(value=verb, addr_mode=int(opcode_full[2])),
+                          Parameter(value=noun, addr_mode=int(opcode_full[1]))]
+                return JumpInstruction(opcode, params)
             else:
                 raise NotImplementedError(f'Opcode: {opcode}')
 
@@ -79,16 +94,6 @@ class IoInstruction(Instruction):
     """
     I/O operation for the interpreter - may consume an input token or output to the output buffer
     """
-
-    @property
-    def place(self) -> Parameter:
-        return self.params[0]
-
-    def memory_index(self, memory: Dict[int, int]) -> int:
-        if self.place.addr_mode == 2:
-            return memory[-1] + self.place.value
-        else:
-            return self.place.value
 
     def take_input(self, memory: Dict[int, int], inputs: List[int]) -> List[int]:
         if self.place.addr_mode == 1:
@@ -121,11 +126,33 @@ class JumpInstruction(Instruction):
     Jump the instruction pointer based for execution based on current state
     """
 
+    def verb(self, memory: Dict[int, int]) -> int:
+        if self.params[0].addr_mode == 1:
+            return self.params[0].value
+        elif self.params[0].addr_mode == 2:
+            return memory[memory[-1] + self.params[0].value]
+        else:
+            return memory[self.params[0].value]
+
+    def noun(self, memory: Dict[int, int]) -> int:
+        if self.params[1].addr_mode == 1:
+            return self.params[1].value
+        elif self.params[1].addr_mode == 2:
+            return memory[memory[-1] + self.params[1].value]
+        else:
+            return memory[self.params[1].value]
+
     def execute(self, in_state: ProgramState) -> ProgramState:
         ins_ptr, memory, inputs, outputs = in_state
-        # TODO: Change the value of ins_ptr
-
-        return in_state
+        # Offset of +1 because -1 is the relative base for relative addressing
+        if self.opcode == 5:
+            new_ptr = self.noun(memory) + 1 if self.verb(memory) > 0 else ins_ptr
+            return new_ptr, memory, inputs, outputs
+        elif self.opcode == 6:
+            new_ptr = self.noun(memory) + 1 if self.verb(memory) == 0 else ins_ptr
+            return new_ptr, memory, inputs, outputs
+        else:
+            raise NotImplementedError(f'Instruction not implemented: {self}')
 
 
 class BinaryOpInstruction(Instruction):
@@ -150,10 +177,6 @@ class BinaryOpInstruction(Instruction):
             raise NotImplementedError(f'Addressing mode {self.params[0].addr_mode} not supported')
 
     @property
-    def place(self) -> Parameter:
-        return self.params[2]
-
-    @property
     def operation(self) -> Callable[[int, int], int]:
         return {
             1: lambda x, y: x + y,
@@ -164,13 +187,12 @@ class BinaryOpInstruction(Instruction):
 
     def execute(self, in_state: ProgramState) -> ProgramState:
         ins_ptr, memory, inputs, outputs = in_state
-        if self.place.addr_mode == 0:
-            memory[self.place.value] = self.operation(self.verb(memory), self.noun(memory))
 
-            return ins_ptr, memory, inputs, outputs
-        else:
-            # TODO: Deal with relative offset
+        if self.place.addr_mode == 1:
             raise NotImplementedError(f'Addressing mode for place={self.place.addr_mode} is unsupported')
+
+        memory[self.memory_index(memory)] = self.operation(self.verb(memory), self.noun(memory))
+        return ins_ptr, memory, inputs, outputs
 
 
 def run_instruction(in_state: ProgramState) -> ProgramState:
@@ -187,6 +209,8 @@ def run_instruction(in_state: ProgramState) -> ProgramState:
         new_ptr = ins_ptr + 4
     elif isinstance(instruction, IoInstruction):
         new_ptr = ins_ptr + 2
+    elif isinstance(instruction, JumpInstruction):
+        new_ptr = ins_ptr + 3
     else:
         new_ptr = ins_ptr
 
@@ -215,7 +239,8 @@ class Program:
 class Machine:
     def __init__(self, input_str: str, param_ranges: List[Tuple[int, Iterable[int]]] = []):
         # param_range is tuple of (instruction index, range of values)
-        self.base_program = dict(enumerate(map(lambda x: int(x), input_str.split(","))))
+        self.base_program = defaultdict(int)
+        self.base_program.update(enumerate(map(lambda x: int(x), input_str.split(","))))
         self.base_program.update([(-1, 0)])  # Add the relative addressing base
 
         # Convert any substitutions to a parameter space
