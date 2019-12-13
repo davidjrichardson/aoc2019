@@ -65,6 +65,7 @@ class Instruction(ABC):
 
                 return BinaryOpInstruction(opcode, params)
             elif opcode == 3 or opcode == 4:
+                print(f'Generating instruction for opcode {opcode}')
                 place, rest = args[0], args[1:]
                 params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
                 return IoInstruction(opcode, params)
@@ -83,6 +84,7 @@ class HaltInstruction(Instruction):
     """
 
     def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
+        print('halt program')
         return None  # Halting causes a no-op in execution
 
 
@@ -102,7 +104,7 @@ class JumpInstruction(Instruction):
     @property
     def compare(self) -> Callable[[int, int], Union[int, None]]:
         return {  # +1 offset is used here because of the relative_base being at the -1 index
-            5: lambda x, y: y + 1 if x > 0 else None,
+            5: lambda x, y: y + 1 if x != 0 else None,
             6: lambda x, y: y + 1 if x == 0 else None,
         }.get(self.opcode)
 
@@ -110,6 +112,7 @@ class JumpInstruction(Instruction):
         """
         Returns the new instruction pointer value or None if there is no change
         """
+        print(f'jumping to {self.compare(state.resolve_value(self.verb), state.resolve_value(self.noun))}')
         return self.compare(state.resolve_value(self.verb), state.resolve_value(self.noun))
 
 
@@ -124,10 +127,12 @@ class IoInstruction(Instruction):
         If the opcode is for value input, then None is returned. If the opcode is for value output, input_val is None.
         """
         if self.opcode == 3:
+            print(f'inserting {input_val} at location {state.resolve_index(self.place)}')
             # Update the internal state then return None to indicate an input operation
             state.update([(state.resolve_index(self.place), input_val)])
             return state
         elif self.opcode == 4:
+            print(f'outputting value {state.resolve_value(self.place)} from location {state.resolve_index(self.place)}')
             return state.resolve_value(self.place)
         else:
             raise NotImplementedError(f'I/O is not implemented for instruction: {self}')
@@ -160,6 +165,7 @@ class BinaryOpInstruction(Instruction):
         }.get(self.opcode)
 
     def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
+        print(f'result {self.operation(state.resolve_value(self.verb), state.resolve_value(self.noun))} at location {state.resolve_index(self.place)}')
         state[state.resolve_index(self.place)] = self.operation(state.resolve_value(self.verb),
                                                                 state.resolve_value(self.noun))
         return None
@@ -179,10 +185,14 @@ class Program(defaultdict):
         self.initial = inputs
         self.inputs = inputs
         self.pipe = pipe
+        self.ins_ptr = 1
 
     @property
     def int_list(self):
         return list(map(lambda x: x[1], sorted(self.items(), key=lambda x: x[0])))
+
+    def is_finished(self):
+        return self.int_list[self.ins_ptr] == 99
 
     def set_pipe(self, pipe: State):
         self.pipe = pipe
@@ -198,36 +208,47 @@ class Program(defaultdict):
         super(Program, self).clear()
         super(Program, self).update(new_state)
 
-    async def execute(self):
+    def execute(self):
         """
         Execute the memory state, starting at the instruction pointer and has some inputs. Will return some output
         value(s) as an iterable
         """
-        ins_ptr = 1
-
-        while instruction := Instruction.from_int_list(self.int_list[ins_ptr:]):
-            # Update the value of instruction pointer
-            ins_ptr = ins_ptr + instruction.length
-
+        print(f'begin {self.label} exec with ins_ptr: {self.ins_ptr}')
+        while instruction := Instruction.from_int_list(self.int_list[self.ins_ptr:]):
+            print(f'P:{self.label} ins_ptr: {self.ins_ptr}, instruction: {instruction}')
             # Exit early if it's a halt instruction
             if instruction.opcode == 99:
+                print(f'Halting program {self.label}')
                 break
+
+            # Update the value of instruction pointer
+            self.ins_ptr = self.ins_ptr + instruction.length
 
             if instruction.opcode == 3:  # If we're an input instruction then handle the special case of inputs
                 if not self.inputs:
                     # Execute the piped-in program first
                     if not self.pipe:
                         raise AttributeError(
-                            f'There is no input buffer available for ptr: {ins_ptr}; instruction {instruction}')
+                            f'There is no input buffer available for ptr: {self.ins_ptr}; instruction {instruction}')
 
-                    self.inputs += [i async for i in self.pipe.execute()]
+                    if self.pipe.is_finished():
+                        print(f'Program {self.pipe.label} has finished, continuing onto next instruction')
+                        continue
+                    else:
+                        print(f'Running sub-program {self.pipe.label}')
+                        self.inputs += [self.pipe.execute()]
+                        print(f'Resuming {self.label}:{self.ins_ptr - instruction.length} with output from {self.pipe.label}: {self.inputs}')
+                        # print(Instruction.from_int_list(self.int_list[self.ins_ptr - instruction.length:]))
+                        # print(self[28])
+                        print(f'{instruction}')
 
                 self.update(instruction.execute(self, input_val=self.inputs.pop(0)))
             elif instruction.opcode == 4:
-                yield instruction.execute(self)
+                value = instruction.execute(self)
+                return value
             elif instruction.opcode == 5 or instruction.opcode == 6:  # Jump instructions change the instruction pointer
                 new_ptr = instruction.execute(self)
-                ins_ptr = new_ptr if new_ptr else ins_ptr
+                self.ins_ptr = new_ptr if new_ptr else self.ins_ptr
             else:
                 instruction.execute(self)
 
@@ -288,6 +309,8 @@ class Machine:
     def set_pipe(self, pipe: Program):
         self.program.set_pipe(pipe)
 
-    async def run_program(self):
-        output = [i async for i in self.program.execute()]
+    def run_program(self):
+        output = []
+        while not self.program.is_finished():
+            output.append(self.program.execute())
         return output
