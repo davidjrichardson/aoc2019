@@ -196,9 +196,15 @@ class Program(defaultdict):
         return list(map(lambda x: x[1], sorted(self.items(), key=lambda x: x[0])))
 
     def is_finished(self):
+        """
+        Determines if the program has halted
+        """
         return self.int_list[self.ins_ptr] == 99
 
     def pipe_into(self, pipe: State) -> State:
+        """
+        Function to set up pipes between programs. Returns the program that is being piped into for nice chaining
+        """
         self.pipe = pipe
         return pipe
 
@@ -206,6 +212,9 @@ class Program(defaultdict):
         self.inputs = list(inputs)
 
     def send(self, value: int):
+        """
+        Function used when piping values from one process to the next
+        """
         self.inputs.append(value)
 
     def reset(self, new_state=[]):
