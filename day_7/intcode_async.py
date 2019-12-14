@@ -65,7 +65,6 @@ class Instruction(ABC):
 
                 return BinaryOpInstruction(opcode, params)
             elif opcode == 3 or opcode == 4:
-                print(f'Generating instruction for opcode {opcode}')
                 place, rest = args[0], args[1:]
                 params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
                 return IoInstruction(opcode, params)
@@ -84,7 +83,6 @@ class HaltInstruction(Instruction):
     """
 
     def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
-        print('halt program')
         return None  # Halting causes a no-op in execution
 
 
@@ -112,7 +110,6 @@ class JumpInstruction(Instruction):
         """
         Returns the new instruction pointer value or None if there is no change
         """
-        print(f'jumping to {self.compare(state.resolve_value(self.verb), state.resolve_value(self.noun))}')
         return self.compare(state.resolve_value(self.verb), state.resolve_value(self.noun))
 
 
@@ -122,17 +119,14 @@ class IoInstruction(Instruction):
     addressing mode. Values returned are yielded to the output buffer.
     """
 
-    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None, State]:
+    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
         """
         If the opcode is for value input, then None is returned. If the opcode is for value output, input_val is None.
         """
         if self.opcode == 3:
-            print(f'inserting {input_val} at location {state.resolve_index(self.place)}')
             # Update the internal state then return None to indicate an input operation
             state.update([(state.resolve_index(self.place), input_val)])
-            return state
         elif self.opcode == 4:
-            print(f'outputting value {state.resolve_value(self.place)} from location {state.resolve_index(self.place)}')
             return state.resolve_value(self.place)
         else:
             raise NotImplementedError(f'I/O is not implemented for instruction: {self}')
@@ -165,7 +159,6 @@ class BinaryOpInstruction(Instruction):
         }.get(self.opcode)
 
     def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
-        print(f'result {self.operation(state.resolve_value(self.verb), state.resolve_value(self.noun))} at location {state.resolve_index(self.place)}')
         state[state.resolve_index(self.place)] = self.operation(state.resolve_value(self.verb),
                                                                 state.resolve_value(self.noun))
         return None
@@ -176,16 +169,27 @@ class Program(defaultdict):
     A helper class to implement methods over the program memory state
     """
 
-    def __init__(self, initial_state: Memory, label: str, inputs: List[int] = None, pipe: State = None):
+    def __init__(self, label: str, input_str: str = None, input_program: Memory = None):
         # Initialise this program's state
         super(Program, self).__init__(int)
-        super(Program, self).update(initial_state)
 
-        self.label = label
-        self.initial = inputs
-        self.inputs = inputs
-        self.pipe = pipe
+        self.update([(-1, 0)])
+        # Initialise the program from another or from an input string
+        if not input_str and not input_program:
+            raise ValueError('Cannot initialise a program without a provided program string or an existing program')
+
+        if input_program:
+            self.update(input_program)
+        else:
+            self.update(enumerate(map(lambda x: int(x), input_str.split(","))))
+
+        self.output_buf = []
         self.ins_ptr = 1
+        self.inputs = []
+        self.label = label
+
+        # Other vars that are initialised from functions and are optional
+        self.pipe = None
 
     @property
     def int_list(self):
@@ -194,31 +198,32 @@ class Program(defaultdict):
     def is_finished(self):
         return self.int_list[self.ins_ptr] == 99
 
-    def set_pipe(self, pipe: State):
+    def pipe_into(self, pipe: State) -> State:
         self.pipe = pipe
+        return pipe
 
     def set_input_values(self, inputs: List[int]):
-        self.initial = list(inputs)
         self.inputs = list(inputs)
 
-    def reset(self, new_state: Memory = []):
+    def send(self, value: int):
+        self.inputs.append(value)
+
+    def reset(self, new_state=[]):
         """
         A function to clear the internal state and then set it to the provided new state
         """
-        super(Program, self).clear()
-        super(Program, self).update(new_state)
+        self.clear()
+        self.update(new_state)
+        self.ins_ptr = 1
 
     def execute(self):
         """
         Execute the memory state, starting at the instruction pointer and has some inputs. Will return some output
         value(s) as an iterable
         """
-        print(f'begin {self.label} exec with ins_ptr: {self.ins_ptr}')
         while instruction := Instruction.from_int_list(self.int_list[self.ins_ptr:]):
-            print(f'P:{self.label} ins_ptr: {self.ins_ptr}, instruction: {instruction}')
             # Exit early if it's a halt instruction
             if instruction.opcode == 99:
-                print(f'Halting program {self.label}')
                 break
 
             # Update the value of instruction pointer
@@ -226,26 +231,16 @@ class Program(defaultdict):
 
             if instruction.opcode == 3:  # If we're an input instruction then handle the special case of inputs
                 if not self.inputs:
-                    # Execute the piped-in program first
-                    if not self.pipe:
-                        raise AttributeError(
-                            f'There is no input buffer available for ptr: {self.ins_ptr}; instruction {instruction}')
+                    # Pause execution and return back to the caller to wait for the next input
+                    return
 
-                    if self.pipe.is_finished():
-                        print(f'Program {self.pipe.label} has finished, continuing onto next instruction')
-                        continue
-                    else:
-                        print(f'Running sub-program {self.pipe.label}')
-                        self.inputs += [self.pipe.execute()]
-                        print(f'Resuming {self.label}:{self.ins_ptr - instruction.length} with output from {self.pipe.label}: {self.inputs}')
-                        # print(Instruction.from_int_list(self.int_list[self.ins_ptr - instruction.length:]))
-                        # print(self[28])
-                        print(f'{instruction}')
-
-                self.update(instruction.execute(self, input_val=self.inputs.pop(0)))
+                instruction.execute(self, input_val=self.inputs.pop(0))
             elif instruction.opcode == 4:
                 value = instruction.execute(self)
-                return value
+                self.output_buf.append(value)
+                if self.pipe and not self.pipe.is_finished():
+                    self.pipe.send(value)
+                    self.pipe.execute()
             elif instruction.opcode == 5 or instruction.opcode == 6:  # Jump instructions change the instruction pointer
                 new_ptr = instruction.execute(self)
                 self.ins_ptr = new_ptr if new_ptr else self.ins_ptr
@@ -273,44 +268,3 @@ class Program(defaultdict):
             return parameter.value
 
         return self.get(self.resolve_index(parameter), 0)
-
-
-class Machine:
-    def __init__(self, label: str, input_str: str = None, input_program: Memory = None):
-        if input_str:
-            # Convert the program string to a default dictionary
-            self.initial_state = defaultdict(int)
-            self.initial_state.update(enumerate(map(lambda x: int(x), input_str.split(","))))
-        elif input_program:
-            # Make a copy of the input state as a default dictionary
-            self.initial_state = defaultdict(int)
-            self.initial_state.update(input_program)
-        else:
-            raise NotImplementedError('Instantiating a machine requires an initial program string or memory state')
-
-        self.initial_state.update([(-1, 0)])  # Always initialise the relative base
-        self.program = Program(self.initial_state, label)
-
-    def reset_memory(self):
-        """
-        A function to restore this machine's state to how it was initialised
-        """
-        self.program.reset(self.initial_state)
-
-    def update_memory(self, changes: List[MemoryAddr]):
-        """
-        A function to make updates to specific memory addresses in the machine
-        """
-        self.program.update(changes)
-
-    def set_input_values(self, inputs: List[int]):
-        self.program.set_input_values(inputs)
-
-    def set_pipe(self, pipe: Program):
-        self.program.set_pipe(pipe)
-
-    def run_program(self):
-        output = []
-        while not self.program.is_finished():
-            output.append(self.program.execute())
-        return output
