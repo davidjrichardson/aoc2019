@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Tuple, List, Dict, NamedTuple, Union, TypeVar, Callable
+from typing import Tuple, List, Dict, NamedTuple, Optional, TypeVar, Callable
 
 Memory = Dict[int, int]
 MemoryAddr = Tuple[int, int]
@@ -28,7 +28,7 @@ class Instruction(ABC):
         return f'Instruction(opcode={self.opcode}, parameters={self.params})'
 
     @property
-    def place(self) -> Union[Parameter, None]:
+    def place(self) -> Optional[Parameter]:
         if self.opcode != 99:
             return self.params[-1]
         else:
@@ -39,7 +39,7 @@ class Instruction(ABC):
         return len(self.params) + 1  # The number of parameters +1 for the opcode
 
     @abstractmethod
-    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
+    def execute(self, state: State, input_val: Optional[int] = None) -> Optional[int]:
         pass
 
     @staticmethod
@@ -68,6 +68,10 @@ class Instruction(ABC):
                 place, rest = args[0], args[1:]
                 params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
                 return IoInstruction(opcode, params)
+            elif opcode == 9:
+                place, rest = args[0], args[1:]
+                params = [Parameter(value=place, addr_mode=int(opcode_full[2]))]
+                return RelativeBaseInstruction(opcode, params)
             elif opcode == 5 or opcode == 6:
                 verb, noun, rest = args[0], args[1], args[2:]
                 params = [Parameter(value=verb, addr_mode=int(opcode_full[2])),
@@ -82,8 +86,24 @@ class HaltInstruction(Instruction):
     Halt instruction to indicate to the interpreter that the program has finished
     """
 
-    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
-        return None  # Halting causes a no-op in execution
+    def execute(self, state: State, input_val: Optional[int] = None) -> Optional[int]:
+        return  # Halting causes a no-op in execution
+
+
+class RelativeBaseInstruction(Instruction):
+    """
+    An instruction that updates the relative base of the program being run
+    """
+
+    @property
+    def verb(self):
+        return self.params[0]
+
+    def execute(self, state: State, input_val: Optional[int] = None) -> Optional[int]:
+        # The relative base is stored in index -1 of the program state
+        # print(f'Updating relative base from {state[-1]} to {state.resolve_value(self.verb)}')
+        state[-1] = state[-1] + state.resolve_value(self.verb)
+        return
 
 
 class JumpInstruction(Instruction):
@@ -100,13 +120,13 @@ class JumpInstruction(Instruction):
         return self.params[1]
 
     @property
-    def compare(self) -> Callable[[int, int], Union[int, None]]:
+    def compare(self) -> Callable[[int, int], Optional[int]]:
         return {  # +1 offset is used here because of the relative_base being at the -1 index
             5: lambda x, y: y + 1 if x != 0 else None,
             6: lambda x, y: y + 1 if x == 0 else None,
         }.get(self.opcode)
 
-    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
+    def execute(self, state: State, input_val: Optional[int] = None) -> Optional[int]:
         """
         Returns the new instruction pointer value or None if there is no change
         """
@@ -119,7 +139,7 @@ class IoInstruction(Instruction):
     addressing mode. Values returned are yielded to the output buffer.
     """
 
-    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
+    def execute(self, state: State, input_val: Optional[int] = None) -> Optional[int]:
         """
         If the opcode is for value input, then None is returned. If the opcode is for value output, input_val is None.
         """
@@ -158,10 +178,10 @@ class BinaryOpInstruction(Instruction):
             8: lambda x, y: 1 if x == y else 0,
         }.get(self.opcode)
 
-    def execute(self, state: State, input_val: Union[int, None] = None) -> Union[int, None]:
+    def execute(self, state: State, input_val: Optional[int] = None) -> Optional[int]:
         state[state.resolve_index(self.place)] = self.operation(state.resolve_value(self.verb),
                                                                 state.resolve_value(self.noun))
-        return None
+        return
 
 
 class Program(defaultdict):
@@ -195,6 +215,9 @@ class Program(defaultdict):
     def int_list(self):
         return list(map(lambda x: x[1], sorted(self.items(), key=lambda x: x[0])))
 
+    def set_input_values(self, inputs: List[int]):
+        self.inputs = list(inputs)
+
     def is_finished(self):
         """
         Determines if the program has halted
@@ -207,9 +230,6 @@ class Program(defaultdict):
         """
         self.pipe = pipe
         return pipe
-
-    def set_input_values(self, inputs: List[int]):
-        self.inputs = list(inputs)
 
     def send(self, value: int):
         """
@@ -224,6 +244,10 @@ class Program(defaultdict):
         self.clear()
         self.update(new_state)
         self.ins_ptr = 1
+        self.output_buf.clear()
+
+    def clear_output(self):
+        self.output_buf.clear()
 
     def execute(self):
         """
@@ -240,6 +264,9 @@ class Program(defaultdict):
 
             if instruction.opcode == 3:  # If we're an input instruction then handle the special case of inputs
                 if not self.inputs:
+                    # Adjust the value of instruction pointer so we re-execute this instruction
+                    self.ins_ptr = self.ins_ptr - instruction.length
+
                     # Pause execution and return back to the caller to wait for the next input
                     return
 
@@ -265,7 +292,7 @@ class Program(defaultdict):
 
         if parameter.addr_mode == 2:
             # Add the relative base to the parameter
-            return parameter.value + self.get(-1, 0)
+            return parameter.value + self[-1]
         else:
             return parameter.value
 
@@ -276,4 +303,4 @@ class Program(defaultdict):
         if parameter.addr_mode == 1:
             return parameter.value
 
-        return self.get(self.resolve_index(parameter), 0)
+        return self[self.resolve_index(parameter)]

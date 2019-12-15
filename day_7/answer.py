@@ -1,9 +1,8 @@
 import sys
 from itertools import permutations
 
+sys.path.insert(1, '../util')
 from intcode_async import Program
-
-sys.setrecursionlimit(10 ** 6)
 
 # Open the file and turn it into a list of ints
 with open('input.txt', 'r') as input_file:
@@ -34,7 +33,7 @@ for a, b, c, d, e in list(permutations(range(0, 5))):
     amp_a.pipe_into(amp_b) \
         .pipe_into(amp_c) \
         .pipe_into(amp_d) \
-        .pipe_into(amp_e) \
+        .pipe_into(amp_e)
 
     amp_a.execute()
     q1_answer = max(q1_answer, ((a, b, c, d, e), amp_e.output_buf[-1]), key=lambda x: x[1])
